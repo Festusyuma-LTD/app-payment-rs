@@ -10,6 +10,12 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[derive(Debug)]
+pub struct PayoutInit {
+    pub id: String,
+    pub status: PayoutStatus,
+}
+
 #[derive(Deserialize)]
 struct PaystackTransfer {
     transfer_code: String,
@@ -38,24 +44,20 @@ impl PayoutService {
 
     pub async fn init_transfer(
         &self,
-        id: &str,
         account_id: &str,
         amount: u64,
         reason: Option<&str>,
-    ) -> ServiceResult<PayoutStatus> {
-        if self.payouts.get(id).await?.is_some() {
-            return ServiceError::PayoutExists.into();
-        }
-
+    ) -> ServiceResult<PayoutInit> {
         let Some(account) = self.accounts.get(account_id).await? else {
             return ServiceError::AccountNotFound.into();
         };
 
+        let id = Uuid::new_v4().to_string();
         let reference = Uuid::new_v4().to_string();
 
         self.payouts
             .create(Payout {
-                id: id.into(),
+                id: id.clone(),
                 account_id: account_id.into(),
                 reference: reference.clone(),
                 transfer_code: None,
@@ -85,10 +87,13 @@ impl PayoutService {
         let transfer: PaystackTransfer = send(request).await?;
 
         self.payouts
-            .update_transfer(id, &transfer.transfer_code, transfer.status)
+            .update_transfer(&id, &transfer.transfer_code, transfer.status)
             .await?;
 
-        Ok(transfer.status)
+        Ok(PayoutInit {
+            id,
+            status: transfer.status,
+        })
     }
 
     pub async fn complete_transfer(&self, id: &str, otp: &str) -> ServiceResult<PayoutStatus> {
