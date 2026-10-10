@@ -1,9 +1,10 @@
 use crate::repo::accounts::AccountRepo;
 use crate::repo::models::Account;
 use crate::util::config::Config;
-use crate::util::error::ServiceResult;
+use crate::util::error::{ServiceError, ServiceResult};
 use crate::util::paystack::{PAYSTACK_BASE_URL, send};
 
+use moka::future::Cache;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const BANKS_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const RECIPIENT_CACHE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Bank {
@@ -31,9 +33,30 @@ struct RecipientDetails {
 }
 
 #[derive(Deserialize)]
-struct Recipient {
+struct PaystackRecipient {
     recipient_code: String,
     details: RecipientDetails,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct Recipient {
+    pub id: String,
+    pub account_number: String,
+    pub account_name: String,
+    pub bank_code: String,
+    pub bank_name: String,
+}
+
+impl From<Account> for Recipient {
+    fn from(account: Account) -> Self {
+        Self {
+            id: account.id,
+            account_number: account.account_number,
+            account_name: account.account_name,
+            bank_code: account.bank_code,
+            bank_name: account.bank_name,
+        }
+    }
 }
 
 pub struct AccountService {
@@ -41,6 +64,7 @@ pub struct AccountService {
     config: Arc<Config>,
     accounts: AccountRepo,
     banks: RwLock<Option<(Instant, Vec<Bank>)>>,
+    recipients: Cache<String, Recipient>,
 }
 
 impl AccountService {
@@ -52,6 +76,7 @@ impl AccountService {
             accounts,
             service: String::from("paystack"),
             banks: RwLock::new(None),
+            recipients: Cache::builder().time_to_live(RECIPIENT_CACHE_TTL).build(),
         }
     }
 
@@ -103,7 +128,7 @@ impl AccountService {
                 "currency": "NGN",
             }));
 
-        let recipient: Recipient = send(request).await?;
+        let recipient: PaystackRecipient = send(request).await?;
         let id = Uuid::new_v4().to_string();
 
         self.accounts
@@ -119,5 +144,20 @@ impl AccountService {
             .await?;
 
         Ok(id)
+    }
+
+    pub async fn get_recipient(&self, id: &str) -> ServiceResult<Recipient> {
+        if let Some(recipient) = self.recipients.get(id).await {
+            return Ok(recipient);
+        }
+
+        let Some(account) = self.accounts.get(id).await? else {
+            return ServiceError::AccountNotFound.into();
+        };
+
+        let recipient = Recipient::from(account);
+        self.recipients.insert(id.into(), recipient.clone()).await;
+
+        Ok(recipient)
     }
 }

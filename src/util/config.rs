@@ -45,7 +45,7 @@ impl ConfigBuilder {
 pub struct Config {
     pub(crate) db_client: aws_sdk_dynamodb::Client,
     pub(crate) http_client: reqwest::Client,
-    pub(crate) paystack_secret: String,
+    pub(crate) _paystack_secret: String,
     pub(crate) payment_table_name: String,
     pub(crate) accounts_table_name: String,
     pub(crate) payout_table_name: String,
@@ -84,7 +84,7 @@ impl Config {
         Self {
             db_client: aws_sdk_dynamodb::Client::new(&config),
             http_client,
-            paystack_secret,
+            _paystack_secret: paystack_secret,
             payment_table_name,
             accounts_table_name,
             payout_table_name,

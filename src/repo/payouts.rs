@@ -1,4 +1,5 @@
 use crate::repo::models::{Payout, PayoutStatus};
+use crate::util::dynamo::{condition_failed_as, get_by_id, insert};
 use crate::util::error::{ServiceError, ServiceResult};
 
 use aws_sdk_dynamodb::types::AttributeValue;
@@ -18,48 +19,17 @@ impl PayoutRepo {
     }
 
     pub(crate) async fn get(&self, id: &str) -> ServiceResult<Option<Payout>> {
-        let output = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key("id", AttributeValue::S(id.into()))
-            .send()
-            .await
-            .map_err(|e| {
-                println!("{:?}", e);
-                SharedError::ServerError
-            })?;
-
-        let Some(item) = output.item else {
-            return Ok(None);
-        };
-
-        Payout::from_item(&item).map(Some).ok_or_else(|| {
-            println!("malformed payout item: {:?}", item);
-            SharedError::ServerError
-        })
+        get_by_id(&self.client, &self.table_name, id, Payout::from_item).await
     }
 
     pub(crate) async fn create(&self, payout: Payout) -> ServiceResult<()> {
-        self.client
-            .put_item()
-            .table_name(&self.table_name)
-            .set_item(Some(payout.into_item()))
-            .condition_expression("attribute_not_exists(id)")
-            .send()
-            .await
-            .map_err(|e| {
-                if e.as_service_error()
-                    .is_some_and(|e| e.is_conditional_check_failed_exception())
-                {
-                    return ServiceError::PayoutExists.into();
-                }
-
-                println!("{:?}", e);
-                SharedError::ServerError
-            })?;
-
-        Ok(())
+        insert(
+            &self.client,
+            &self.table_name,
+            payout.into_item(),
+            ServiceError::PayoutExists,
+        )
+        .await
     }
 
     pub(crate) async fn update_transfer(
@@ -97,16 +67,7 @@ impl PayoutRepo {
             .expression_attribute_values(":status", AttributeValue::S(status.as_str().into()))
             .send()
             .await
-            .map_err(|e| {
-                if e.as_service_error()
-                    .is_some_and(|e| e.is_conditional_check_failed_exception())
-                {
-                    return ServiceError::PayoutNotFound.into();
-                }
-
-                println!("{:?}", e);
-                SharedError::ServerError
-            })?;
+            .map_err(condition_failed_as(ServiceError::PayoutNotFound))?;
 
         Ok(())
     }

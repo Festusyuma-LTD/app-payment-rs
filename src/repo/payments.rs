@@ -1,4 +1,5 @@
 use crate::repo::models::{Payment, PaymentStatus};
+use crate::util::dynamo::{get_by_id, insert};
 use crate::util::error::{ServiceError, ServiceResult};
 
 use aws_sdk_dynamodb::types::AttributeValue;
@@ -18,48 +19,17 @@ impl PaymentRepo {
     }
 
     pub(crate) async fn get(&self, id: &str) -> ServiceResult<Option<Payment>> {
-        let output = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key("id", AttributeValue::S(id.into()))
-            .send()
-            .await
-            .map_err(|e| {
-                println!("{:?}", e);
-                SharedError::ServerError
-            })?;
-
-        let Some(item) = output.item else {
-            return Ok(None);
-        };
-
-        Payment::from_item(&item).map(Some).ok_or_else(|| {
-            println!("malformed payment item: {:?}", item);
-            SharedError::ServerError
-        })
+        get_by_id(&self.client, &self.table_name, id, Payment::from_item).await
     }
 
     pub(crate) async fn create(&self, payment: Payment) -> ServiceResult<()> {
-        self.client
-            .put_item()
-            .table_name(&self.table_name)
-            .set_item(Some(payment.into_item()))
-            .condition_expression("attribute_not_exists(id)")
-            .send()
-            .await
-            .map_err(|e| {
-                if e.as_service_error()
-                    .is_some_and(|e| e.is_conditional_check_failed_exception())
-                {
-                    return ServiceError::PaymentExists.into();
-                }
-
-                println!("{:?}", e);
-                SharedError::ServerError
-            })?;
-
-        Ok(())
+        insert(
+            &self.client,
+            &self.table_name,
+            payment.into_item(),
+            ServiceError::PaymentExists,
+        )
+        .await
     }
 
     pub(crate) async fn update_status(&self, id: &str, status: PaymentStatus) -> ServiceResult<()> {
